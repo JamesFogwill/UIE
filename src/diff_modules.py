@@ -1,65 +1,58 @@
+import cv2
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import matplotlib.pyplot as plt
+import diff_tools as dm
+import pdb
+import random
 
 
-def display_image_pair(input_images, gt_images):
-    """
-    Displays the first image from the input_images and gt_images batches.
+# Conv block for  in depth feature extraction with a skip connection
+class DoubConvBlock(nn.Module):
+    # ADAPTED FROM https://github.com/dome272/Diffusion-Models-pytorch/blob/main/modules.py
+    def __init__(self, inp_channels, outp_channels, residual=None):
+        super().__init__()
 
-    Args:
-        input_images: A batch of input images (tensor).
-        gt_images: A batch of ground truth images (tensor).
-    """
+        self.residual = residual
+        self.outp_channels = outp_channels
+        self.endNorm = nn.GroupNorm(1, outp_channels)
 
-    # Extract the first image from each batch
-    first_input_image = input_images[0].cpu().detach()
-    first_gt_image = gt_images[0].cpu().detach()
+        self.convblock = nn.Sequential(
+            nn.Conv2d(in_channels=inp_channels, out_channels=outp_channels, kernel_size=3, padding=1),
+            nn.GroupNorm(1, outp_channels),
+            nn.GELU(),
+            nn.Conv2d(in_channels=outp_channels, out_channels=outp_channels, kernel_size=3, padding=1),
+            nn.GroupNorm(1, outp_channels),
+        )
 
-    # Denormalize images if necessary (assuming your transformations normalized them)
-    first_input_image = (first_input_image + 1) / 2
-    first_gt_image = (first_gt_image + 1) / 2
-
-    # Display the images
-    plt.figure(figsize=(10, 5))
-    plt.subplot(1, 2, 1)
-    plt.imshow(first_input_image.permute(1, 2, 0))  # Convert to HWC for matplotlib
-    plt.title("Input Image")
-    plt.axis('off')
-
-    plt.subplot(1, 2, 2)
-    plt.imshow(first_gt_image.permute(1, 2, 0))  # Convert to HWC for matplotlib
-    plt.title("Ground Truth Image")
-    plt.axis('off')
-
-    plt.show()
+    def forward(self, x):
+        if self.residual:
+            # add element wise skip connection to help gradient flow
+            feature_map = F.gelu(x + self.convblock(x))
+            return feature_map
+        else:
+            feature_map = self.convblock(x)
+            return feature_map
 
 
-def cpdm_loss(model, x0, y0, noise_scheduler, mse_loss):
-    """
-    Calculates the CPDM loss as described in the paper.
+class ImageEncoder(nn.Module):
+    def __init__(self, c_in=3, embedding_dim=64):
+        super().__init__()
 
-    Args:
-        model: The U-Net model.
-        x0: Batch of original (degraded) images.
-        y0: Batch of corresponding ground truth (clean) images.
-        noise_scheduler: The noise scheduler used for the diffusion process.
-        mse_loss: An instance of the MSE loss function.
+        self.encoder = nn.Sequential(
+            nn.Conv2d(c_in, 64, kernel_size=3, stride=2, padding=1),  # [32,32]
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),  # [16,16]
+            nn.ReLU(),
+            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),  # [8,8]
+            nn.ReLU(),
+            nn.Conv2d(256, 512, kernel_size=3, stride=2, padding=1),  # [4,4]
+            nn.ReLU(),
 
-    Returns:
-        The calculated CPDM loss.
-    """
+            nn.Flatten(),
+            nn.Linear(512 * 4 * 4, embedding_dim)  # Adjust based on your image size
+        )
 
-    # Sample timesteps
-    t = noise_scheduler.sample_timesteps(x0.shape[0]).to(x0.device)
-
-    # Forward diffusion process
-    xt, noise = noise_scheduler.noise_images(x0, t)
-
-    # Get model prediction
-    predicted_noise = model(xt, t, y0=y0)
-
-    # Calculate the loss
-    loss = mse_loss(noise, predicted_noise)
-    return loss
+    def forward(self, x):
+        x1 = self.encoder(x)
+        return x1

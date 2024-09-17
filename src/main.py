@@ -1,20 +1,19 @@
 # main project loop
 
 import os
-import sys
 import torch
 import torchvision.utils
 from torch import optim, nn
 from torchvision import transforms
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 import DatasetUtils
 import NoiseSchedular
-import diff_modules as dm
 import Unet
-
-import matplotlib.pyplot as plt
+import diff_tools as dt
+import diff_modules as dm
+import argparse
 
 """
 Set up device
@@ -30,18 +29,26 @@ else:
 # Absolute path to the project root (UIE folder)
 project_root = r"C:\Users\james\OneDrive\Documents\GitHub\UIE"
 
+# Initialize SummaryWriter with the absolute path
+writer = SummaryWriter(os.path.join(project_root, "runs", "logs0.4.5_testrgbagain"))
+
+# Add a note/description for this specific run
+writer.add_text("Notes", "Changes made in this run: made a few changes back to the inp layer and also increase output "
+                         "if conditional to 6 channels and input of inp to 6 to try and retain that conditional "
+                         "information"
+                         "")
+
 """
 All parameters
 """
 # parameters
 
-epochs = 501
+epochs = 26
 img_size = 64  # 224 because random crop?
 time_steps = 1000  # number of diffusion steps
 batch_size = 8
 
-# Initialize SummaryWriter with the absolute path
-writer = SummaryWriter(os.path.join(project_root, "runs", "logs0.12_cond"))
+
 """
 Training transforms.
 
@@ -67,12 +74,20 @@ test_transform = transforms.Compose([transforms.Resize((img_size, img_size)), tr
 
 """
 Creation of model, dataset and noise schedular Objects
-"""
-noise_scheduler = NoiseSchedular.NoiseSchedular(img_size=img_size, time_steps=time_steps, beta_start=1e-4, beta_end=0.02,
-                                                device="cuda").to(device)
 
-# Create the Unet Model for reverse diffusion
-model = Unet.SimpleUNet(input_channels=3, out_channels=3, time_embedding=64, device="cuda").to(device)
+READ THIS
+You may run the training with either model shown below, they both work fine.
+There is no saved state dict for the RGBHSV model, i ran out of time to make one.
+The supplied state dict uses the SimpleUNet, you an run this in the file called Test.py
+"""
+
+# Create the Unet Model UNCOMMENT THE ONE YOU WANT TO USE. ONE AT A TIME.
+model = Unet.SimpleUNet(input_channels=3, out_channels=3, time_embedding=64, pretrained_encoder=False, device="cuda").to(device)
+# model = Unet.RGBHSVUNet(input_channels=3, out_channels=3, time_embedding=64, device="cuda").to(device)
+
+noise_scheduler = NoiseSchedular.NoiseSchedular(img_size=img_size, time_steps=time_steps, beta_start=1e-4,
+                                                beta_end=0.02,
+                                                device="cuda").to(device)
 
 # Create Dataset objects for train, inference and test
 dataset_train = DatasetUtils.DatasetUtils(root="../", transform=training_transform, train=True, inference=False)
@@ -82,148 +97,85 @@ dataset_inference = DatasetUtils.DatasetUtils(root="../", transform=test_transfo
 # create the data loaders for the datasets
 train_loader = DataLoader(dataset_train, batch_size=batch_size, shuffle=False, drop_last=True)
 test_loader = DataLoader(dataset_test, batch_size=batch_size, shuffle=False, drop_last=True)
-inference_loader = DataLoader(dataset_inference, batch_size=batch_size, shuffle=False, drop_last=True)
+inference_loader = DataLoader(dataset_inference, batch_size=batch_size - 4, shuffle=False, drop_last=True)
 
 # list the number of images in the directory for checking purposes
 dataset_train.list_data()
 dataset_test.list_data()
 
-"""
-Show the batch image pairs to verify correct loading.
-
-Uses torchvision grids to group input and gt images in a horizontal line
-Uses matplotlib subplots to plot the two grids together on a grid
-Uses tensorboard to save the first batch to tensorboard
-
-"""
-
-# create and unpack batch
+# verify batch is loading image pairs correctly
 batch = next(iter(train_loader))
-input_images, gt_images, gt_hsv = batch
+input_images, gt_images = batch
 
-# set up the figure using torchvision
 gt_grid = torchvision.utils.make_grid(gt_images.clip(0, 1), nrow=batch_size)
 input_grid = torchvision.utils.make_grid(input_images.clip(0, 1), nrow=batch_size)
 
-"""
-# permute them so values are as expected for plt.subplots
-gt_grid_np = gt_grid.permute(1, 2, 0).numpy()
-input_grid_np = input_grid.permute(1, 2, 0).numpy()
-
-# matplot sub-plot to arrange the torch grids
-fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(15, 10))
-
-# set up the axis
-axes[0].imshow(input_grid_np)
-axes[0].set_title("Input Images")
-axes[0].axis('off')
-
-axes[1].imshow(gt_grid_np)
-axes[1].set_title("GT images")
-axes[1].axis('off')
-
-# arranges the grid and shows the grid
-plt.tight_layout()
-plt.show()
-"""
-
-# add input and gt images to tensor board
 writer.add_image('Input images', input_grid)
 writer.add_image('Ground truth images', gt_grid)
 
 """
-The forward diffusion loop.
-
-contains the forward diffusion/noising in a for loop.
-Model learns how to recreate the up-scaled images without the water.
-
+Main Training loop start
 """
 # create loss and optimiser
-optimiser = optim.AdamW(model.parameters(), lr=0.001)
+optimiser = optim.AdamW(model.parameters(), lr=0.0005)
 mse = nn.MSELoss()
 
 # create sample time-steps and sample model to add to tensor board
 t = noise_scheduler.sample_timesteps(batch_size).to(device)
-writer.add_graph(model, (input_images.to(device), t))
+writer.add_graph(model, (input_images.to(device), t,))
 
 writer.close()
 
 total_batches = len(train_loader)
 total_loss = 0.0
+first = True
 
 for epoch in range(epochs):
-    total_loss = 0
-    print("starting epoch, ", epoch+1)
+
+    print("starting epoch, ", epoch + 1)
 
     for batch_idx, batch in enumerate(train_loader):
-
         # unpacks the batch
-        input_images, gt_images, gt_hsv = batch
+        input_images, gt_images = batch
 
         # send all images to the currently selected device / GPU
         gt_images = gt_images.to(device)
-        gt_hsv = gt_hsv.to(device)
         input_images = input_images.to(device)
 
         # Comment When Running - display first image in the input and gt batch to check the image pairs are set up
-        # dm.display_image_pair(input_images, gt_images)
+        # dt.display_image_pair(gt_images, gt_images)
 
         # create timestep tensor
         t = noise_scheduler.sample_timesteps(batch_size).to(device)
 
-        # return all the noisy images and the noise added to each image
-        x_t, noise = noise_scheduler.noise_images(input_images, t)
+        # return all the noised images and the noise added to each image
+        x_t, noise = noise_scheduler.noise_images(gt_images, t)
 
         # run reverse diffusion for to get predicted noise with ground truth images to guide.
-        predicted_noise = model(x_t, t, y0=gt_images)
+        predicted_noise = model(x_t, t, y0=input_images)
 
         # Work out loss
         loss = mse(noise, predicted_noise)
         total_loss += loss.item()
 
-        if (batch_idx + 1) % 10 == 0:
-            print(f'Epoch[{epoch + 1}/{epochs}], Batch[{batch_idx}/{total_batches}], Loss[{loss.item():.4f}]')
-            writer.add_scalar("Training loss", total_loss / 10, epoch * total_batches + batch_idx)
-            total_loss = 0.0
-        # use tensor board helps visualise loss, network.
-
         optimiser.zero_grad()
         loss.backward()
         optimiser.step()
 
-    # sample new images every 10 epochs where n is the number of sampled images
-    if (epoch + 1) % 25 == 0:
+    # works out the average loss per epoch and prints to the terminal + tensorboard then resets the loss
+    print(f'Average Epoch{epoch + 1} Loss:[{total_loss / total_batches}]')
+    writer.add_scalar("Average Epoch Training Loss", total_loss / total_batches, epoch)
+    total_loss = 0.0
+
+    # sample new images the first and every 25 epochs where n is the number of sampled images
+    if (epoch + 1) % 25 == 0 or first is True:
+        # save the model every 25 epochs
+        torch.save(model.state_dict(),
+                   os.path.join("../", "results", "models", "checkpoints", f"ckpt_epoch_{epoch + 1}.pt"))
+
+        print(f'Running Inference Epoch{epoch + 1}')
+        first = False
+        dt.inference_full(inference_loader=inference_loader, model=model, noise_scheduler=noise_scheduler, time_steps=time_steps, writer=writer, epoch=epoch)
 
         # Sample images for inference and add to tensorboard
-        # sampled_images = noise_scheduler.generate_images(model, n=gt_images.shape[0], loader=inference_loader)
-        sampled_images = noise_scheduler.generate_images2(model, n=1, inf_loader=inference_loader)
-        sampled_images_grid = torchvision.utils.make_grid(sampled_images)
-        writer.add_image(f'Epoch[{epoch + 1}] Sampled images', sampled_images_grid)
-
-        # save images to folders in the root directory of project
-        DatasetUtils.save_images(images=sampled_images, path=os.path.join("../", "results", "sample_images", f"{epoch}.jpg"))
-        # save the model state_dict for future use
-        torch.save(model.state_dict(), os.path.join("../", "results", "models", "checkpoints", f"ckpt_epoch_{epoch + 1}.pt"))
-
-"""
-Testing of the model
-"""
-# Load the state dictionary from the specified checkpoint
-checkpoint_path = os.path.join("../", "results", "models", "checkpoints", "ckpt_epoch_500.pt")
-model.load_state_dict(torch.load(checkpoint_path))
-
-# Set the model to evaluation mode for testing
-model.eval()
-
-# Generate images using the test loader
-with torch.no_grad():
-
-    # generate 3 images for each gt image in the test set
-    sampled_images = noise_scheduler.generate_images2(model, n=3, inf_loader=test_loader)
-
-    # write these images to the tensor board
-    sampled_images_grid = torchvision.utils.make_grid(sampled_images)
-    writer.add_image(f'Test Sample Images', sampled_images_grid)
-
-# Save or visualize the generated images
-DatasetUtils.save_images(images=sampled_images, path=os.path.join("../", "results", "test_images", "generated.jpg"))
+        # sampled_images = noise_scheduler.generate_images(model, n=1, inf_loader=inference_loader)

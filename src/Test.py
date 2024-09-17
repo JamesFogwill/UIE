@@ -2,32 +2,25 @@ import os
 
 import torch
 import torchvision.utils
-from torch import optim, nn
 from torchvision import transforms
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 import DatasetUtils
 import NoiseSchedular
-import diff_modules as dm
 import Unet
+import diff_tools as dt
 
 """
-Set up
 
-Sets up the device:
-    Cuda
+    Hello, if you would like to run the testing then you will have to download the LSUI dataset as there are too many images for github to store.
+    The model state dictionary is stored in the ResultsGithub folder and it works within this file.
+    you will have to configure the project root,
+    start a tenosr board,
+    There is no testing model for the RGBHSV diffusion model Yet! Coming soon
 
-Sets up variables:
-    img_size
-    time_steps
-    batch_size
-
-Sets up objects:
-    Summary Writer
-    Model
-    NoiseSchedular
 """
+
 # device setup
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -44,15 +37,15 @@ time_steps = 1000  # number of diffusion steps
 batch_size = 8
 
 # Initialize SummaryWriter with the absolute path
-writer = SummaryWriter(os.path.join(project_root, "runs", "logs0.13_cond"))
+writer = SummaryWriter(os.path.join(project_root, "runs", "logs1.0_Get_Results"))
 
 # init noise schedular
-noise_scheduler = NoiseSchedular.NoiseSchedular(img_size=img_size, time_steps=time_steps, beta_start=1e-4, beta_end=0.02,
+noise_scheduler = NoiseSchedular.NoiseSchedular(img_size=img_size, time_steps=time_steps, beta_start=1e-4,
+                                                beta_end=0.02,
                                                 device="cuda").to(device)
 
 # Create the Unet Model for reverse diffusion
-model = Unet.SimpleUNet(input_channels=3, out_channels=3, time_embedding=64, device="cuda").to(device)
-
+model = Unet.SimpleUNet(input_channels=3, out_channels=3, time_embedding=64, pretrained_encoder=False, device="cuda").to(device)
 """
 Creates test transform and dataset loaders
 """
@@ -69,7 +62,7 @@ test_loader = DataLoader(dataset_test, batch_size=batch_size, shuffle=False, dro
 Testing of the model
 """
 # Load the state dictionary from the specified checkpoint
-checkpoint_path = os.path.join("../", "results", "models", "checkpoints", "ckpt_epoch_250.pt")
+checkpoint_path = os.path.join("../", "ResultsGithub", "Model state dict", "WorkingSimpleUnet", "ckpt_epoch_300.pt")
 model.load_state_dict(torch.load(checkpoint_path))
 
 # Set the model to evaluation mode for testing
@@ -78,12 +71,16 @@ model.eval()
 # Generate images using the test loader
 with torch.no_grad():
 
-    # generate 3 images for each gt image in the test set
-    sampled_images = noise_scheduler.generate_images2(model, n=1, inf_loader=test_loader)
+    # generate images using test loader and evaluation metrics for them
+    # sampled_images_metrics = noise_scheduler.generate_images_metrics(model, batch_size=8, loader=test_loader, writer=writer)
+    # sampled_images, avg_psnr, avg_ssim, avg_mse = sampled_images_metrics
 
-    # write these images to the tensor board
-    sampled_images_grid = torchvision.utils.make_grid(sampled_images)
-    writer.add_image(f'Test Sample Images', sampled_images_grid)
+    dt.inference_full(inference_loader=test_loader, model=model, noise_scheduler=noise_scheduler, time_steps=time_steps, writer=writer, epoch=300, testing=True)
+
+    # Add metrics to TensorBoard
+    #writer.add_scalar('PSNR', avg_psnr)
+    #writer.add_scalar('SSIM', avg_ssim)
+    #writer.add_scalar('MSE', avg_mse)
 
 # Save or visualize the generated images
-DatasetUtils.save_images(images=sampled_images, path=os.path.join("../", "results", "test_images", "generated.jpg"))
+#dt.save_images(images=sampled_images, path=os.path.join("../", "results", "test_images", "generated.jpg"))

@@ -9,21 +9,6 @@ import cv2 as cv
 import numpy as np
 
 
-def plot_images(images):
-    plt.figure(figsize=(32, 32))
-    plt.imshow(torch.cat([
-        torch.cat([i for i in images.cpu()], dim=-1),
-    ], dim=-2).permute(1, 2, 0).cpu())
-    plt.show()
-
-
-def save_images(images, path):
-    grid = torchvision.utils.make_grid(images)
-    ndarr = grid.permute(1, 2, 0).to('cpu').numpy()
-    im = Image.fromarray(ndarr)
-    im.save(path)
-
-
 # inherit pytorch dataset class
 class DatasetUtils(Dataset):
     def __init__(self, root, transform, train=True, inference=False):
@@ -74,11 +59,7 @@ class DatasetUtils(Dataset):
             input_image = self.transform(input_image)
             gt_image = self.transform(gt_image)
 
-        image_np = gt_image.numpy().transpose(1, 2, 0)  # converts to numpys HWC format
-        gt_hsv = cv.cvtColor(image_np, cv.COLOR_RGB2HSV)
-        gt_hsv = torch.from_numpy(gt_hsv.transpose(2, 0, 1))
-
-        return input_image, gt_image, gt_hsv
+        return input_image, gt_image
 
     def list_data(self):
         # Get the list of image filenames (assuming they have the same names in both directories)
@@ -88,6 +69,3 @@ class DatasetUtils(Dataset):
         # print the number of images in the directory
         print("There are ", len(self.input_images), " images in input directory")
         print("There are ", len(self.gt_images), " images in gt directory")
-
-    def get_item(self):
-        pass

@@ -155,6 +155,9 @@ dmypy.json
 cython_debug/
 
 LSUD/
+Results saved/
+Results current/
+runs/
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
